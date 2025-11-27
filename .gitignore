@@ -1,0 +1,48 @@
+# Criar .gitignore
+@"
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+
+# Modelos treinados (muito grandes!)
+*.pth
+*.pt
+*.caffemodel
+*.onnx
+
+# Dataset (muito grande!)
+data/raw/
+data/processed/
+
+# Logs e runs
+runs/
+logs/
+*.log
+
+# TensorBoard
+events.out.tfevents.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Weights
+weights/
+yolov8*.pt
+"@ | Out-File -FilePath .gitignore -Encoding utf8
