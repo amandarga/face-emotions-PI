@@ -189,7 +189,7 @@ with tab1:
         col1, col2 = st.columns(2)
         
         with col1:
-            st.image(image, caption="Imagem Original", use_column_width=True)
+            st.image(image, caption="Imagem Original", width='stretch')
         
         with col2:
             with st.spinner("🔍 Analisando..."):
@@ -223,7 +223,7 @@ with tab1:
                     # Mostrar resultado
                     result_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
                     st.image(result_rgb, caption=f"✅ {len(faces)} rosto(s) detectado(s)", 
-                            use_column_width=True)
+                            width='stretch')
 
 # ==================== TAB 2: WEBCAM ====================
 with tab2:
