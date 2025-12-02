@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import cv2
 import pandas as pd
@@ -16,18 +15,13 @@ sys.path.append('src')
 from models.emotion_model import EmotionCNN
 from data.dataset import get_val_transforms
 
-
 @st.cache_resource
 def download_model_if_needed():
-    """Baixar modelo do Google Drive automaticamente"""
     model_path = 'models/checkpoints/emotions/best.pth'
     
     if not os.path.exists(model_path):
         with st.spinner("⏳ Baixando modelo pela primeira vez... (~30 segundos)"):
-            # Criar diretório
             os.makedirs('models/checkpoints/emotions', exist_ok=True)
-            
-            # ID do Google Drive
             file_id = "1aLIibbwDQMAfvBqai-u3A5WopDnY-WHK"
             url = f"https://drive.google.com/uc?id={file_id}&export=download"
             
