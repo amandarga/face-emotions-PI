@@ -1,130 +1,95 @@
+# src/data/prepare_dataset.py
 import os
-import yaml
 import json
+import yaml
 import shutil
+from tqdm import tqdm
 from pathlib import Path
-from sklearn.model_selection import train_test_split
-from collections import Counter
 
-def prepare_emotion_dataset(config_path='configs/config.yaml'):
+def convert_json_to_folders():
     """
-    Prepara dataset de emoções a partir de estrutura de pastas
-    
-    Estrutura esperada:
-    data/raw/emotions/
-        ├── feliz/
-        │   ├── img1.jpg
-        │   └── img2.jpg
-        ├── triste/
-        │   ├── img1.jpg
-        │   └── img2.jpg
-        └── ...
+    Converte estrutura antiga (train.json) para nova (pastas)
     """
     
-    # Carregar config
-    with open(config_path, 'r') as f:
+    # Carregar configuração
+    with open('configs/config.yaml', 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
-    raw_path = config['data']['raw_path']
-    processed_path = config['data']['processed_path']
-    emotions = config['emotions']['classes']
+    processed_path = config['paths']['processed_data']
+    emotion_names = config['emotions']['classes']
     
-    emotion_path = os.path.join(raw_path, 'emotions')
-    
-    # Coletar imagens e labels
-    image_paths = []
-    labels = []
-    
-    print("📂 Coletando imagens...")
-    for emotion_idx, emotion in enumerate(emotions):
-        emotion_dir = os.path.join(emotion_path, emotion)
-        
-        if not os.path.exists(emotion_dir):
-            print(f"⚠️  Diretório não encontrado: {emotion_dir}")
-            continue
-        
-        for img_name in os.listdir(emotion_dir):
-            if img_name.lower().endswith(('.jpg', '.jpeg', '.png')):
-                img_path = os.path.join(emotion_dir, img_name)
-                image_paths.append(img_path)
-                labels.append(emotion_idx)
-    
-    print(f"\n✅ Total de imagens: {len(image_paths)}")
-    print(f"📊 Distribuição:")
-    label_counts = Counter(labels)
-    for emotion_idx, count in sorted(label_counts.items()):
-        print(f"   {emotions[emotion_idx]}: {count}")
-    
-    # Split train/val/test
-    train_split = config['data']['train_split']
-    val_split = config['data']['val_split']
-    
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        image_paths, labels,
-        train_size=train_split,
-        random_state=config['random_seed'],
-        stratify=labels
-    )
-    
-    val_ratio = val_split / (val_split + config['data']['test_split'])
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp,
-        train_size=val_ratio,
-        random_state=config['random_seed'],
-        stratify=y_temp
-    )
-    
-    print(f"\n📊 Divisão dos dados:")
-    print(f"   Treino: {len(X_train)} ({len(X_train)/len(image_paths)*100:.1f}%)")
-    print(f"   Validação: {len(X_val)} ({len(X_val)/len(image_paths)*100:.1f}%)")
-    print(f"   Teste: {len(X_test)} ({len(X_test)/len(image_paths)*100:.1f}%)")
-    
-    # Salvar splits
-    splits_dir = os.path.join(processed_path, 'emotions')
-    os.makedirs(splits_dir, exist_ok=True)
-    
-    splits = {
-        'train': {'paths': X_train, 'labels': y_train},
-        'val': {'paths': X_val, 'labels': y_val},
-        'test': {'paths': X_test, 'labels': y_test}
+    # Mapeamento de índices para nomes com prefixo
+    emotion_map = {
+        0: '0_raiva',
+        1: '1_nojo',
+        2: '2_medo',
+        3: '3_feliz',
+        4: '4_neutro',
+        5: '5_triste',
+        6: '6_surpresa'
     }
     
-    for split_name, split_data in splits.items():
-        split_file = os.path.join(splits_dir, f'{split_name}.json')
-        with open(split_file, 'w') as f:
-            json.dump(split_data, f, indent=2)
-        print(f"✅ Salvo: {split_file}")
+    print("🔄 Convertendo JSONs para estrutura de pastas...")
     
-    print("\n✅ Preparação concluída!")
-    return splits
-
-def prepare_detection_dataset_yolo(annotations_dir, output_dir):
-    """
-    Prepara dataset para YOLOv8
+    # Processar cada split
+    for split_name in ['train', 'val', 'test']:
+        json_file = os.path.join(processed_path, f'{split_name}.json')
+        
+        if not os.path.exists(json_file):
+            print(f"⚠️  {json_file} não encontrado, pulando...")
+            continue
+        
+        print(f"\n📂 Processando {split_name}...")
+        
+        # Carregar JSON
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+        
+        paths = data['paths']
+        labels = data['labels']
+        
+        print(f"   Total de imagens: {len(paths)}")
+        
+        # Criar diretórios para cada emoção
+        for emotion_idx, emotion_folder in emotion_map.items():
+            split_dir = os.path.join(processed_path, split_name, emotion_folder)
+            os.makedirs(split_dir, exist_ok=True)
+        
+        # Copiar imagens para as pastas correspondentes
+        for img_path, label in tqdm(zip(paths, labels), total=len(paths), desc=f'  Copiando {split_name}'):
+            if not os.path.exists(img_path):
+                continue
+            
+            emotion_folder = emotion_map[label]
+            img_name = os.path.basename(img_path)
+            dest_path = os.path.join(processed_path, split_name, emotion_folder, img_name)
+            
+            # Copiar arquivo
+            if not os.path.exists(dest_path):
+                shutil.copy2(img_path, dest_path)
+        
+        print(f"   ✅ {split_name} concluído!")
     
-    Formato de anotação esperado (YOLO):
-    - Um arquivo .txt para cada imagem
-    - Formato: class x_center y_center width height (normalizados 0-1)
-    """
-    print("🎯 Preparando dataset de detecção para YOLOv8...")
+    print("\n✅ Conversão completa!")
     
-    # Criar estrutura YOLO
+    # Resumo final
+    print("\n📊 Estrutura final:")
     for split in ['train', 'val', 'test']:
-        os.makedirs(os.path.join(output_dir, split, 'images'), exist_ok=True)
-        os.makedirs(os.path.join(output_dir, split, 'labels'), exist_ok=True)
+        split_path = os.path.join(processed_path, split)
+        if os.path.exists(split_path):
+            total = 0
+            for emotion_folder in emotion_map.values():
+                emotion_path = os.path.join(split_path, emotion_folder)
+                if os.path.exists(emotion_path):
+                    count = len([f for f in os.listdir(emotion_path) if f.endswith(('.jpg', '.jpeg', '.png'))])
+                    total += count
+            print(f"  {split}: {total} imagens")
     
-    print(f"✅ Estrutura criada em: {output_dir}")
-    print("\n📝 Para anotar suas imagens, use:")
-    print("   - LabelImg: https://github.com/heartexlabs/labelImg")
-    print("   - Roboflow: https://roboflow.com")
-    print("   - CVAT: https://cvat.org")
+    print("\n💡 Dica: Você pode deletar os arquivos .json antigos se quiser:")
+    print(f"   - {processed_path}/train.json")
+    print(f"   - {processed_path}/val.json")
+    print(f"   - {processed_path}/test.json")
+
 
 if __name__ == "__main__":
-    # Preparar dataset de emoções
-    prepare_emotion_dataset()
-    
-    # Preparar dataset de detecção
-    prepare_detection_dataset_yolo(
-        'data/raw/annotations',
-        'data/processed/detection'
-    )
+    convert_json_to_folders()

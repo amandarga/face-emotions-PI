@@ -68,8 +68,8 @@ class ImprovedFaceEmotionDetector:
         # Sistema de estabilização de emoções
         self.emotion_history = {}
         self.stable_emotions = {}
-        self.history_size = 7
-        self.min_consistency = 5
+        self.history_size = 10
+        self.min_consistency = 6
     
     def detect_faces(self, frame):
         """Detectar faces usando OpenCV DNN"""
@@ -124,8 +124,14 @@ class ImprovedFaceEmotionDetector:
     def get_stable_emotion(self, face_id, current_emotion, confidence):
         """Sistema de estabilização: só muda emoção se for consistente"""
         # Ignorar detecções com baixa confiança
-        if confidence < 0.4:
+        if confidence < 0.60:  # ← REDUZIDO de 0.4 para 0.35
             return self.stable_emotions.get(face_id, (current_emotion, confidence))
+        
+        # SE CONFIANÇA MUITO ALTA, RESETA HISTÓRICO (nova emoção clara)
+        if confidence > 0.85:  # ← NOVO: Reset em alta confiança
+            self.emotion_history[face_id] = deque(maxlen=self.history_size)
+            self.stable_emotions[face_id] = (current_emotion, confidence)
+            return (current_emotion, confidence)
         
         # Inicializar histórico se não existir
         if face_id not in self.emotion_history:
@@ -136,7 +142,7 @@ class ImprovedFaceEmotionDetector:
         self.emotion_history[face_id].append((current_emotion, confidence))
         
         # Se histórico ainda não está cheio, manter emoção atual
-        if len(self.emotion_history[face_id]) < self.min_consistency:
+        if len(self.emotion_history[face_id]) < 3:  # ← REDUZIDO de 5 para 3
             return self.stable_emotions[face_id]
         
         # Contar votos das últimas detecções
@@ -144,16 +150,19 @@ class ImprovedFaceEmotionDetector:
         total_conf = {}
         
         for emo, conf in self.emotion_history[face_id]:
-            emotion_votes[emo] = emotion_votes.get(emo, 0) + 1
+            # Dar MAIS peso às detecções recentes com alta confiança
+            weight = conf  # ← NOVO: Voto ponderado por confiança
+            emotion_votes[emo] = emotion_votes.get(emo, 0) + weight
             total_conf[emo] = total_conf.get(emo, 0) + conf
         
-        # Encontrar emoção mais votada
+        # Encontrar emoção mais votada (por peso, não por contagem)
         winning_emotion = max(emotion_votes, key=emotion_votes.get)
-        votes = emotion_votes[winning_emotion]
+        votes_weight = emotion_votes[winning_emotion]
+        count = sum(1 for emo, _ in self.emotion_history[face_id] if emo == winning_emotion)
         
-        # Só muda se tiver votos suficientes
-        if votes >= self.min_consistency:
-            avg_conf = total_conf[winning_emotion] / votes
+        # Só muda se tiver votos suficientes (REDUZIDO)
+        if count >= 3:  # ← REDUZIDO de 5 para 3
+            avg_conf = total_conf[winning_emotion] / count
             self.stable_emotions[face_id] = (winning_emotion, avg_conf)
         
         return self.stable_emotions[face_id]

@@ -1,51 +1,49 @@
-# Configuração Geral
-project_name: "face_emotion_detection"
-random_seed: 42
-
-# Dados
-data:
-  raw_path: "data/raw"
-  processed_path: "data/processed"
-  image_size: 640  # Para detecção
-  emotion_size: 224  # Para emoções
-  train_split: 0.7
-  val_split: 0.15
-  test_split: 0.15
-  
-# Classes de Emoções
+# configs/config.yaml
 emotions:
-  classes: ['feliz', 'triste', 'raiva', 'surpresa', 'neutro', 'medo', 'nojo']
   num_classes: 7
+  classes: [feliz, triste, raiva, surpresa, neutro, medo, nojo ]
 
-# Treinamento - Detecção Facial
-detection:
-  model: "yolov8n.pt"  # nano, small, medium, large, xlarge
-  epochs: 100
-  batch_size: 16
-  img_size: 640
-  learning_rate: 0.001
-  patience: 15  # Early stopping
-  device: "cuda"  # ou "cpu"
-  workers: 4
 
-# Treinamento - Emoções
+paths:
+  raw_data: 'data/raw/emotions'
+  processed_data: 'data/processed/emotions'
+  models: 'models/checkpoints/emotions'
+
 emotion_recognition:
-  backbone: "efficientnet_b0"  # ou resnet50, mobilenetv3
+  # Modelo maior para mais capacidade
+  backbone: "efficientnet_b2"
   pretrained: true
-  epochs: 20
-  batch_size: 32
-  img_size: 224
+  
+  # Imagem maior (B2 aceita resolução maior)
+  img_size: 96
+  
+  # Treinamento
+  epochs: 30
+  batch_size: 24
   learning_rate: 0.0001
+  
+  # Regularização
   weight_decay: 0.0001
-  patience: 10
+  dropout: 0.4
+  
+  # Mixup
+  use_mixup: true
+  mixup_alpha: 0.2
+  mixup_prob: 0.5
+  
+  # Label Smoothing
+  label_smoothing: 0.1
+  
+  # Device
   device: "cuda"
   workers: 4
-
-# Augmentations
-augmentation:
-  horizontal_flip: 0.5
-  rotation: 10
-  brightness: 0.2
-  contrast: 0.2
-  saturation: 0.2
-  hue: 0.1
+  
+  # Early stopping
+  patience: 10
+  min_delta: 0.001
+  
+  # Learning rate scheduling
+  scheduler:
+    type: "cosine"
+    T_max: 30
+    eta_min: 0.000001

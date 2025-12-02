@@ -1,102 +1,108 @@
-import os
-import json
-import yaml
+# src/training/train_emotions.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
-import numpy as np
-from sklearn.metrics import classification_report, confusion_matrix
-import matplotlib.pyplot as plt
-import seaborn as sns
-
+import yaml
+import os
 import sys
+from tqdm import tqdm
+
 sys.path.append('src')
-from data.dataset import EmotionDataset, get_train_transforms, get_val_transforms
-from models.emotion_model import EmotionCNN, FocalLoss
+from models.emotion_model import EmotionCNN
+from data.dataset import EmotionDataset, get_train_transforms_advanced, get_val_transforms
+from training.mixup import mixup_data, mixup_criterion
+
+class FocalLoss(nn.Module):
+    """Focal Loss para lidar com desbalanceamento de classes"""
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+    
+    def forward(self, inputs, targets):
+        ce_loss = nn.CrossEntropyLoss(reduction='none')(inputs, targets)
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
+class LabelSmoothingCrossEntropy(nn.Module):
+    """Label Smoothing: reduz overconfidence"""
+    def __init__(self, epsilon=0.1):
+        super().__init__()
+        self.epsilon = epsilon
+    
+    def forward(self, pred, target):
+        n_classes = pred.size(-1)
+        log_pred = torch.log_softmax(pred, dim=-1)
+        
+        # Smooth labels
+        with torch.no_grad():
+            true_dist = torch.zeros_like(log_pred)
+            true_dist.fill_(self.epsilon / (n_classes - 1))
+            true_dist.scatter_(1, target.unsqueeze(1), 1.0 - self.epsilon)
+        
+        return torch.mean(torch.sum(-true_dist * log_pred, dim=-1))
+
 
 class EmotionTrainer:
     def __init__(self, config_path='configs/config.yaml'):
-        # Carregar configuração
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
         
         self.device = torch.device(
             self.config['emotion_recognition']['device']
-            if torch.cuda.is_available() else 'cpu'
+            if torch.cuda.is_available()
+            else 'cpu'
         )
-        print(f"🖥️  Usando device: {self.device}")
         
-        # Criar diretórios
-        self.checkpoint_dir = 'models/checkpoints/emotions'
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        print(f"🔧 Dispositivo: {self.device}")
         
-        # TensorBoard
-        self.writer = SummaryWriter('runs/emotion_training')
-        
-        # Carregar dados
-        self.load_data()
-        
-        # Criar modelo
+        self.setup_data()
         self.create_model()
         
-        # Métricas
-        self.best_val_acc = 0.0
-        self.patience_counter = 0
+        self.best_acc = 0
+        self.epochs_without_improvement = 0
+    
+    def setup_data(self):
+        """Preparar datasets e dataloaders"""
+        cfg = self.config['emotion_recognition']
         
-    def load_data(self):
-        """Carregar datasets"""
-        print("📂 Carregando dados...")
+        train_transform = get_train_transforms_advanced(cfg['img_size'])
+        val_transform = get_val_transforms(cfg['img_size'])
         
-        splits_dir = os.path.join(
-            self.config['data']['processed_path'],
-            'emotions'
-        )
+        train_path = os.path.join(self.config['paths']['processed_data'], 'train')
+        val_path = os.path.join(self.config['paths']['processed_data'], 'val')
         
-        # Carregar splits
-        with open(os.path.join(splits_dir, 'train.json'), 'r') as f:
-            train_data = json.load(f)
-        with open(os.path.join(splits_dir, 'val.json'), 'r') as f:
-            val_data = json.load(f)
-        
-        img_size = self.config['emotion_recognition']['img_size']
-        
-        # Criar datasets
-        train_dataset = EmotionDataset(
-            train_data['paths'],
-            train_data['labels'],
-            transform=get_train_transforms(img_size)
-        )
-        
-        val_dataset = EmotionDataset(
-            val_data['paths'],
-            val_data['labels'],
-            transform=get_val_transforms(img_size)
-        )
-        
-        # DataLoaders
-        batch_size = self.config['emotion_recognition']['batch_size']
-        workers = self.config['emotion_recognition']['workers']
+        self.train_dataset = EmotionDataset(train_path, train_transform)
+        self.val_dataset = EmotionDataset(val_path, val_transform)
         
         self.train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
+            self.train_dataset,
+            batch_size=cfg['batch_size'],
             shuffle=True,
-            num_workers=workers,
+            num_workers=cfg['workers'],
             pin_memory=True
         )
         
         self.val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
+            self.val_dataset,
+            batch_size=cfg['batch_size'],
             shuffle=False,
-            num_workers=workers,
+            num_workers=cfg['workers'],
             pin_memory=True
         )
         
-        print(f"✅ Treino: {len(train_dataset)} | Validação: {len(val_dataset)}")
+        print(f"📊 Treino: {len(self.train_dataset)} imagens")
+        print(f"📊 Validação: {len(self.val_dataset)} imagens")
     
     def create_model(self):
         """Criar modelo e otimizador"""
@@ -105,13 +111,21 @@ class EmotionTrainer:
         self.model = EmotionCNN(
             num_classes=self.config['emotions']['num_classes'],
             backbone=cfg['backbone'],
-            pretrained=cfg['pretrained']
+            pretrained=cfg['pretrained'],
+            dropout=cfg.get('dropout', 0.3)
         ).to(self.device)
         
-        print(f"🧠 Modelo criado: {cfg['backbone']}")
+        print(f"🧠 Modelo: {cfg['backbone']}")
         
-        # Loss function
-        self.criterion = FocalLoss(alpha=1, gamma=2)
+        # Escolher loss function
+        if cfg.get('label_smoothing', 0) > 0:
+            self.criterion = LabelSmoothingCrossEntropy(
+                epsilon=cfg['label_smoothing']
+            )
+            print(f"📉 Loss: Label Smoothing CE (ε={cfg['label_smoothing']})")
+        else:
+            self.criterion = FocalLoss(alpha=1, gamma=2)
+            print(f"📉 Loss: Focal Loss")
         
         # Optimizer
         self.optimizer = optim.AdamW(
@@ -121,12 +135,26 @@ class EmotionTrainer:
         )
         
         # Scheduler
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer,
-            mode='max',
-            patience=5,
-            factor=0.5
-        )
+        scheduler_cfg = cfg.get('scheduler', {})
+        scheduler_type = scheduler_cfg.get('type', 'plateau')
+        
+        if scheduler_type == 'cosine':
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=cfg['epochs'],
+                eta_min=scheduler_cfg.get('eta_min', 1e-6)
+            )
+            print(f"📈 Scheduler: Cosine Annealing")
+        else:
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode='max',
+                patience=5,
+                factor=0.5
+            )
+            print(f"📈 Scheduler: ReduceLROnPlateau")
+        
+        self.scheduler_type = scheduler_type
     
     def train_epoch(self, epoch):
         """Treinar uma época"""
@@ -135,31 +163,45 @@ class EmotionTrainer:
         correct = 0
         total = 0
         
+        cfg = self.config['emotion_recognition']
+        use_mixup = cfg.get('use_mixup', False)
+        mixup_prob = cfg.get('mixup_prob', 0.5)
+        mixup_alpha = cfg.get('mixup_alpha', 0.2)
+        
         pbar = tqdm(self.train_loader, desc=f'Época {epoch+1}')
+        
         for images, labels in pbar:
             images = images.to(self.device)
             labels = labels.to(self.device)
             
-            # Forward
-            self.optimizer.zero_grad()
-            outputs = self.model(images)
-            loss = self.criterion(outputs, labels)
+            # Aplicar Mixup aleatoriamente
+            if use_mixup and torch.rand(1).item() < mixup_prob:
+                images, labels_a, labels_b, lam = mixup_data(
+                    images, labels, alpha=mixup_alpha, device=self.device
+                )
+                
+                outputs = self.model(images)
+                loss = mixup_criterion(self.criterion, outputs, labels_a, labels_b, lam)
+            else:
+                outputs = self.model(images)
+                loss = self.criterion(outputs, labels)
             
-            # Backward
+            self.optimizer.zero_grad()
             loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
             self.optimizer.step()
             
-            # Métricas
             running_loss += loss.item()
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
             
-            # Atualizar progresso
-            acc = 100. * correct / total
             pbar.set_postfix({
-                'loss': running_loss/len(pbar),
-                'acc': f'{acc:.2f}%'
+                'loss': f'{running_loss/(pbar.n+1):.4f}',
+                'acc': f'{100.*correct/total:.2f}%'
             })
         
         epoch_loss = running_loss / len(self.train_loader)
@@ -173,8 +215,6 @@ class EmotionTrainer:
         running_loss = 0.0
         correct = 0
         total = 0
-        all_preds = []
-        all_labels = []
         
         with torch.no_grad():
             for images, labels in tqdm(self.val_loader, desc='Validação'):
@@ -188,103 +228,72 @@ class EmotionTrainer:
                 _, predicted = outputs.max(1)
                 total += labels.size(0)
                 correct += predicted.eq(labels).sum().item()
-                
-                all_preds.extend(predicted.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
         
         val_loss = running_loss / len(self.val_loader)
         val_acc = 100. * correct / total
         
-        return val_loss, val_acc, all_preds, all_labels
-    
-    def save_checkpoint(self, epoch, val_acc, is_best=False):
-        """Salvar checkpoint"""
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'val_acc': val_acc,
-            'config': self.config
-        }
-        
-        # Salvar último checkpoint
-        path = os.path.join(self.checkpoint_dir, 'last.pth')
-        torch.save(checkpoint, path)
-        
-        # Salvar melhor modelo
-        if is_best:
-            path = os.path.join(self.checkpoint_dir, 'best.pth')
-            torch.save(checkpoint, path)
-            print(f"💾 Melhor modelo salvo! Acc: {val_acc:.2f}%")
-    
-    def plot_confusion_matrix(self, labels, predictions, epoch):
-        """Plotar matriz de confusão"""
-        emotions = self.config['emotions']['classes']
-        cm = confusion_matrix(labels, predictions)
-        
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                    xticklabels=emotions, yticklabels=emotions)
-        plt.title(f'Matriz de Confusão - Época {epoch+1}')
-        plt.ylabel('Real')
-        plt.xlabel('Predito')
-        plt.tight_layout()
-        
-        save_path = os.path.join(self.checkpoint_dir, f'confusion_matrix_epoch_{epoch+1}.png')
-        plt.savefig(save_path)
-        plt.close()
+        return val_loss, val_acc
     
     def train(self):
         """Loop principal de treinamento"""
-        epochs = self.config['emotion_recognition']['epochs']
-        patience = self.config['emotion_recognition']['patience']
+        cfg = self.config['emotion_recognition']
+        num_epochs = cfg['epochs']
+        patience = cfg['patience']
         
-        print(f"\n🚀 Iniciando treinamento por {epochs} épocas...")
-        print(f"⏰ Early stopping: {patience} épocas sem melhora\n")
+        print(f"\n🚀 Iniciando treinamento ({num_epochs} épocas)")
+        print(f"⏸️  Early stopping: {patience} épocas sem melhora\n")
         
-        for epoch in range(epochs):
+        for epoch in range(num_epochs):
             # Treinar
             train_loss, train_acc = self.train_epoch(epoch)
             
             # Validar
-            val_loss, val_acc, preds, labels = self.validate()
+            val_loss, val_acc = self.validate()
             
-            # Logging
-            self.writer.add_scalar('Loss/train', train_loss, epoch)
-            self.writer.add_scalar('Loss/val', val_loss, epoch)
-            self.writer.add_scalar('Accuracy/train', train_acc, epoch)
-            self.writer.add_scalar('Accuracy/val', val_acc, epoch)
-            
-            print(f"\nÉpoca {epoch+1}/{epochs}")
-            print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
-            print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
-            
-            # Scheduler
-            self.scheduler.step(val_acc)
-            
-            # Salvar checkpoint
-            is_best = val_acc > self.best_val_acc
-            if is_best:
-                self.best_val_acc = val_acc
-                self.patience_counter = 0
+            # Atualizar scheduler
+            if self.scheduler_type == 'cosine':
+                self.scheduler.step()
             else:
-                self.patience_counter += 1
+                self.scheduler.step(val_acc)
             
-            self.save_checkpoint(epoch, val_acc, is_best)
+            # Log
+            current_lr = self.optimizer.param_groups[0]['lr']
+            print(f"\n📊 Época {epoch+1}/{num_epochs}")
+            print(f"   Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
+            print(f"   Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+            print(f"   LR: {current_lr:.6f}")
             
-            # Plotar matriz de confusão a cada 10 épocas
-            if (epoch + 1) % 10 == 0:
-                self.plot_confusion_matrix(labels, preds, epoch)
+            # Salvar melhor modelo
+            if val_acc > self.best_acc:
+                self.best_acc = val_acc
+                self.epochs_without_improvement = 0
+                
+                save_path = os.path.join(
+                    self.config['paths']['models'],
+                    'best.pth'
+                )
+                
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'val_acc': val_acc,
+                    'train_acc': train_acc,
+                }, save_path)
+                
+                print(f"   ✅ Melhor modelo salvo! (Val Acc: {val_acc:.2f}%)")
+            else:
+                self.epochs_without_improvement += 1
+                print(f"   ⏳ Sem melhora por {self.epochs_without_improvement} épocas")
             
             # Early stopping
-            if self.patience_counter >= patience:
-                print(f"\n⏹️  Early stopping! Sem melhora por {patience} épocas")
+            if self.epochs_without_improvement >= patience:
+                print(f"\n⏹️  Early stopping! Melhor acc: {self.best_acc:.2f}%")
                 break
         
         print(f"\n✅ Treinamento concluído!")
-        print(f"🏆 Melhor acurácia: {self.best_val_acc:.2f}%")
-        
-        self.writer.close()
+        print(f"🏆 Melhor acurácia: {self.best_acc:.2f}%")
+
 
 if __name__ == "__main__":
     trainer = EmotionTrainer()
