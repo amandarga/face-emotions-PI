@@ -4,6 +4,8 @@ import cv2
 import pandas as pd
 import torch
 import yaml
+import gdown
+import os
 import numpy as np
 from PIL import Image
 from pathlib import Path
@@ -13,6 +15,38 @@ from datetime import datetime
 sys.path.append('src')
 from models.emotion_model import EmotionCNN
 from data.dataset import get_val_transforms
+
+
+@st.cache_resource
+def download_model_if_needed():
+    """Baixar modelo do Google Drive automaticamente"""
+    model_path = 'models/checkpoints/emotions/best.pth'
+    
+    if not os.path.exists(model_path):
+        with st.spinner("⏳ Baixando modelo pela primeira vez... (~30 segundos)"):
+            # Criar diretório
+            os.makedirs('models/checkpoints/emotions', exist_ok=True)
+            
+            # ID do Google Drive
+            file_id = "1aLIibbwDQMAfvBqai-u3A5WopDnY-WHK"
+            url = f"https://drive.google.com/uc?id={file_id}&export=download"
+            
+            try:
+                gdown.download(url, model_path, quiet=False)
+                st.success("✅ Modelo baixado com sucesso!")
+                return True
+            except Exception as e:
+                st.error(f"❌ Erro ao baixar modelo: {e}")
+                st.info("💡 Verifique se o arquivo está compartilhado publicamente.")
+                return False
+    
+    return True
+
+# Executar download antes de carregar modelo
+if not download_model_if_needed():
+    st.error("❌ Não foi possível baixar o modelo. Entre em contato com o desenvolvedor.")
+    st.stop()
+
 
 # Configuração
 st.set_page_config(
@@ -201,8 +235,6 @@ with tab1:
 with tab2:
     st.header("🎥 Câmera em Tempo Real no Navegador")
     
-    st.info("📹 **A webcam vai abrir aqui embaixo!** Permita o acesso quando o navegador pedir.")
-    
     # Cores por emoção (BGR para OpenCV)
     EMOTION_COLORS = {
         'feliz': (0, 255, 0),       # Verde
@@ -386,7 +418,6 @@ with tab2:
             desired_playing_state=True
         )
         
-        st.success("✅ Webcam ativada! A detecção está rodando em tempo real (~30 FPS).")
         
         # Legenda de cores
         st.markdown("---")
@@ -409,13 +440,6 @@ with tab2:
         with col4:
             st.markdown("⚫ **NEUTRO** - Cinza")
         
-        st.info("""
-        💡 **Dicas:**
-        - Cada emoção tem sua **cor específica** no fundo
-        - Texto em **branco** para melhor contraste
-        - FPS otimizado (~30 FPS)
-        - Histórico atualiza a cada ~1.5 segundos
-        """)
         
     except ImportError:
         st.error("❌ Erro: `streamlit-webrtc` não instalado!")
@@ -433,7 +457,7 @@ st.markdown("---")
 st.header("📊 Histórico de Detecções")
 
 if len(st.session_state.historico) == 0:
-    st.info("👆 Nenhuma detecção ainda. Use as abas acima para começar!")
+    st.info(" ")
 else:
     # Botão para limpar
     col1, col2 = st.columns([6, 1])
