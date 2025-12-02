@@ -315,8 +315,8 @@ O modelo e face detector são baixados automaticamente na primeira execução.
 
 **Grupo 1 - EduFocus**
 - Projeto Integrador - Senac
-- Curso: [Adicionar nome do curso]
-- Período: 2024/2025
+- Curso: Deep Learning
+- Período: 2025
 
 ---
 
@@ -331,9 +331,6 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 - [ ] Adicionar detecção de emoções em vídeos gravados
 - [ ] Implementar dashboard de analytics
 - [ ] Exportar relatórios em PDF
-- [ ] Suporte para múltiplos idiomas
-- [ ] API REST para integração externa
-- [ ] Modelo ensemble para maior acurácia
 
 ---
 
